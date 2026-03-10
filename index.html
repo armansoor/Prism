@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM — Live Face Studio</title>
+
+<!-- MediaPipe Face Mesh -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+  :root {
+    --bg: #07080f;
+    --panel: #0d0f1a;
+    --panel2: #111422;
+    --border: rgba(255,255,255,0.07);
+    --accent: #b06cff;
+    --accent2: #ff6cb0;
+    --accent3: #6cffd4;
+    --accent4: #ffd96c;
+    --text: #e8e8f0;
+    --muted: #5a5a7a;
+    --glow: 0 0 24px rgba(176,108,255,0.35);
+    --glow2: 0 0 24px rgba(255,108,176,0.35);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    min-height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 54px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--panel);
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: 0.08em;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .logo span { font-weight: 400; opacity: 0.5; font-size: 13px; vertical-align: middle; margin-left: 8px; -webkit-text-fill-color: var(--muted); background: none; }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 14px; border-radius: 99px;
+    border: 1px solid var(--border);
+    font-size: 11px; color: var(--muted);
+    background: var(--bg);
+    transition: all 0.3s;
+  }
+  .status-pill.live { border-color: #ff4444; color: #ff6666; }
+  .status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .status-pill.live .dot { background: #ff4444; animation: pulse-dot 1.2s infinite; }
+  @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .topbar-actions { display: flex; gap: 10px; align-items: center; }
+
+  /* ── LAYOUT ── */
+  .workspace {
+    display: grid;
+    grid-template-columns: 220px 1fr 240px;
+    flex: 1;
+    overflow: hidden;
+    height: calc(100vh - 54px);
+  }
+
+  /* ── PANELS ── */
+  .panel {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: var(--muted) transparent;
+  }
+  .panel:last-child { border-right: none; border-left: 1px solid var(--border); }
+
+  .panel-section {
+    border-bottom: 1px solid var(--border);
+    padding: 16px;
+  }
+  .panel-label {
+    font-size: 9px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 12px; font-family: 'Syne', sans-serif;
+    font-weight: 700;
+  }
+
+  /* ── STAGE (center) ── */
+  .stage {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: #000;
+    overflow: hidden;
+  }
+
+  .canvas-wrap {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at 50% 60%, #0d0618 0%, #000 70%);
+    overflow: hidden;
+  }
+
+  /* Scanline overlay */
+  .canvas-wrap::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.15) 2px,
+      rgba(0,0,0,0.15) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #videoEl {
+    position: absolute;
+    width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
+  }
+
+  #outputCanvas {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 4px;
+    position: relative;
+    z-index: 5;
+    image-rendering: pixelated;
+    transition: filter 0.3s;
+  }
+
+  .stage-overlay {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    z-index: 20;
+  }
+
+  /* Grid lines in background */
+  .grid-bg {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(176,108,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(176,108,255,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: 1;
+    animation: grid-drift 20s linear infinite;
+  }
+  @keyframes grid-drift { 0%{background-position:0 0} 100%{background-position:40px 40px} }
+
+  /* ── EMOTION BADGE ── */
+  .emotion-badge {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(13,15,26,0.85);
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    padding: 6px 18px;
+    font-size: 12px;
+    backdrop-filter: blur(12px);
+    display: flex; align-items: center; gap: 8px;
+    z-index: 25;
+    transition: all 0.4s;
+    pointer-events: none;
+  }
+  .emotion-badge .emoji { font-size: 18px; }
+  .emotion-badge .emo-label { color: var(--accent3); font-family: 'Syne', sans-serif; font-weight: 600; }
+
+  /* ── STAGE BOTTOM BAR ── */
+  .stage-controls {
+    height: 58px;
+    background: var(--panel2);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 0 20px;
+    flex-shrink: 0;
+  }
+
+  /* ── BUTTONS ── */
+  .btn {
+    padding: 8px 18px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.05em;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); box-shadow: var(--glow); }
+  .btn.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: var(--glow); }
+  .btn.danger { border-color: #ff4444; color: #ff6666; }
+  .btn.danger:hover, .btn.danger.active { background: #ff4444; color: #fff; box-shadow: 0 0 24px rgba(255,68,68,0.4); }
+  .btn.accent2 { border-color: var(--accent2); }
+  .btn.accent2:hover, .btn.accent2.active { background: var(--accent2); border-color: var(--accent2); color: #fff; box-shadow: var(--glow2); }
+
+  .btn-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    color: var(--muted);
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-icon.active { background: rgba(176,108,255,0.2); border-color: var(--accent); color: var(--accent); }
+
+  /* ── STYLE GRID ── */
+  .style-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .style-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 8px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--bg);
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .style-card:hover { border-color: var(--accent); color: var(--text); }
+  .style-card.active { border-color: var(--accent); background: rgba(176,108,255,0.12); color: var(--accent); }
+  .style-card .icon { font-size: 22px; display: block; margin-bottom: 5px; }
+
+  /* ── SLIDERS ── */
+  .slider-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+  .slider-label { font-size: 10px; color: var(--muted); width: 70px; flex-shrink: 0; }
+  input[type=range] {
+    flex: 1; -webkit-appearance: none; height: 3px;
+    background: var(--border); border-radius: 99px; cursor: pointer;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--accent); cursor: pointer;
+    box-shadow: 0 0 8px rgba(176,108,255,0.6);
+    transition: transform 0.15s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+  .slider-val { font-size: 10px; color: var(--accent); width: 28px; text-align: right; }
+
+  /* ── OVERLAY CHIPS ── */
+  .overlay-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    padding: 5px 10px; border-radius: 99px;
+    border: 1px solid var(--border);
+    font-size: 10px; cursor: pointer;
+    transition: all 0.2s; color: var(--muted);
+    background: var(--bg);
+  }
+  .chip:hover { border-color: var(--accent3); color: var(--accent3); }
+  .chip.active { border-color: var(--accent3); background: rgba(108,255,212,0.1); color: var(--accent3); }
+
+  /* ── EMOTION METER ── */
+  .emotion-meters { display: flex; flex-direction: column; gap: 8px; }
+  .emo-row { display: flex; align-items: center; gap: 8px; }
+  .emo-name { font-size: 9px; color: var(--muted); width: 52px; }
+  .emo-bar-wrap { flex: 1; height: 4px; background: var(--border); border-radius: 99px; overflow: hidden; }
+  .emo-bar { height: 100%; border-radius: 99px; transition: width 0.2s ease; width: 0%; }
+  .emo-val { font-size: 9px; color: var(--muted); width: 26px; text-align: right; }
+
+  /* ── FX PARTICLES ── */
+  #particleCanvas {
+    position: absolute; inset: 0;
+    pointer-events: none; z-index: 15;
+  }
+
+  /* ── RECORD TIMER ── */
+  .rec-timer {
+    font-family: 'Space Mono', monospace;
+    font-size: 13px; color: #ff6666;
+    display: none; align-items: center; gap: 6px;
+  }
+  .rec-timer.show { display: flex; }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4444; animation: pulse-dot 1s infinite; }
+
+  /* ── BACKGROUND SCENES ── */
+  .scene-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .scene-card {
+    border-radius: 6px; height: 44px;
+    cursor: pointer; border: 2px solid transparent;
+    transition: all 0.2s; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .scene-card:hover { border-color: var(--accent); }
+  .scene-card.active { border-color: var(--accent); box-shadow: var(--glow); }
+
+  /* ── LOADING SCREEN ── */
+  #loadScreen {
+    position: fixed; inset: 0; z-index: 1000;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 24px;
+    transition: opacity 0.6s;
+  }
+  #loadScreen.hidden { opacity: 0; pointer-events: none; }
+
+  .load-logo {
+    font-family: 'Syne', sans-serif; font-weight: 800; font-size: 52px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    letter-spacing: 0.1em;
+    animation: logo-pulse 2s ease-in-out infinite;
+  }
+  @keyframes logo-pulse { 0%,100%{filter:brightness(1)} 50%{filter:brightness(1.4)} }
+
+  .load-bar-wrap { width: 280px; height: 3px; background: var(--border); border-radius: 99px; overflow: hidden; }
+  .load-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; width: 0%; transition: width 0.4s; }
+  .load-text { font-size: 11px; color: var(--muted); }
+
+  /* ── TOOLTIP ── */
+  .tip {
+    position: absolute; top: 16px; right: 16px;
+    background: rgba(13,15,26,0.92); border: 1px solid var(--border);
+    padding: 10px 14px; border-radius: 8px; font-size: 11px; color: var(--muted);
+    z-index: 30; backdrop-filter: blur(8px);
+    max-width: 200px; line-height: 1.6;
+    animation: tip-fade 0.4s ease;
+  }
+  @keyframes tip-fade { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+
+  /* ── NOISE texture ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    pointer-events: none; z-index: 999;
+  }
+
+  .divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 99px; }
+</style>
+</head>
+<body>
+
+<!-- ── LOAD SCREEN ── -->
+<div id="loadScreen">
+  <div class="load-logo">PRISM</div>
+  <div style="font-size:13px;color:var(--muted);letter-spacing:0.1em">LIVE FACE STUDIO</div>
+  <div class="load-bar-wrap"><div class="load-bar" id="loadBar"></div></div>
+  <div class="load-text" id="loadText">Initializing face engine...</div>
+</div>
+
+<!-- ── TOP BAR ── -->
+<div class="topbar">
+  <div class="logo">PRISM <span>live face studio v0.1</span></div>
+  <div class="status-pill" id="statusPill">
+    <div class="dot"></div>
+    <span id="statusText">OFFLINE</span>
+  </div>
+  <div class="topbar-actions">
+    <div class="rec-timer" id="recTimer">
+      <div class="rec-dot"></div>
+      <span id="recTime">00:00</span>
+    </div>
+    <button class="btn danger" id="recBtn" onclick="toggleRecord()">⏺ REC</button>
+    <button class="btn accent2" onclick="captureSnapshot()">📸 SNAP</button>
+  </div>
+</div>
+
+<!-- ── WORKSPACE ── -->
+<div class="workspace">
+
+  <!-- LEFT PANEL: Styles + Scene -->
+  <div class="panel">
+    <div class="panel-section">
+      <div class="panel-label">Face Style</div>
+      <div class="style-grid" id="styleGrid">
+        <div class="style-card active" onclick="setStyle('passthrough')" data-style="passthrough">
+          <span class="icon">🎭</span>Normal
+        </div>
+        <div class="style-card" onclick="setStyle('anime')" data-style="anime">
+          <span class="icon">✨</span>Anime
+        </div>
+        <div class="style-card" onclick="setStyle('pixel')" data-style="pixel">
+          <span class="icon">🕹️</span>Pixel Art
+        </div>
+        <div class="style-card" onclick="setStyle('neon')" data-style="neon">
+          <span class="icon">🌈</span>Neon
+        </div>
+        <div class="style-card" onclick="setStyle('noir')" data-style="noir">
+          <span class="icon">🎬</span>Noir
+        </div>
+        <div class="style-card" onclick="setStyle('vhs')" data-style="vhs">
+          <span class="icon">📼</span>VHS
+        </div>
+        <div class="style-card" onclick="setStyle('thermal')" data-style="thermal">
+          <span class="icon">🌡️</span>Thermal
+        </div>
+        <div class="style-card" onclick="setStyle('glitch')" data-style="glitch">
+          <span class="icon">⚡</span>Glitch
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Background Scene</div>
+      <div class="scene-grid" id="sceneGrid">
+        <div class="scene-card active" onclick="setScene('none')" data-scene="none" style="background:#111">🚫</div>
+        <div class="scene-card" onclick="setScene('space')" data-scene="space" style="background:linear-gradient(135deg,#0a0020,#200060)">🌌</div>
+        <div class="scene-card" onclick="setScene('city')" data-scene="city" style="background:linear-gradient(135deg,#001030,#003060)">🌃</div>
+        <div class="scene-card" onclick="setScene('forest')" data-scene="forest" style="background:linear-gradient(135deg,#002010,#004020)">🌿</div>
+        <div class="scene-card" onclick="setScene('sunset')" data-scene="sunset" style="background:linear-gradient(135deg,#300010,#800040)">🌅</div>
+        <div class="scene-card" onclick="setScene('matrix')" data-scene="matrix" style="background:#001000">💻</div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Overlays</div>
+      <div class="overlay-chips" id="overlayChips">
+        <div class="chip active" onclick="toggleOverlay('mesh')" data-ov="mesh">Face Mesh</div>
+        <div class="chip" onclick="toggleOverlay('avatar')" data-ov="avatar">SVG Avatar</div>
+        <div class="chip" onclick="toggleOverlay('particles')" data-ov="particles">Particles</div>
+        <div class="chip" onclick="toggleOverlay('aura')" data-ov="aura">Aura</div>
+        <div class="chip" onclick="toggleOverlay('hud')" data-ov="hud">HUD Lines</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER: Stage -->
+  <div class="stage">
+    <div class="canvas-wrap" id="canvasWrap">
+      <div class="grid-bg"></div>
+      <video id="videoEl" playsinline autoplay muted></video>
+      <canvas id="particleCanvas"></canvas>
+      <canvas id="outputCanvas"></canvas>
+      <div class="stage-overlay" id="stageOverlay"></div>
+
+      <div class="emotion-badge" id="emotionBadge">
+        <span class="emoji" id="emotionEmoji">😐</span>
+        <span class="emo-label" id="emotionLabel">NEUTRAL</span>
+      </div>
+    </div>
+
+    <div class="stage-controls">
+      <button class="btn" id="mirrorBtn" onclick="toggleMirror()">🪞 Mirror</button>
+      <button class="btn" id="meshBtn" onclick="toggleFaceMesh()">⬡ Mesh</button>
+      <button class="btn" onclick="cycleStyle()">🔀 Cycle Style</button>
+      <button class="btn" onclick="triggerBurst()">✨ FX Burst</button>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL: Controls + Emotion -->
+  <div class="panel">
+    <div class="panel-section">
+      <div class="panel-label">Style Intensity</div>
+      <div class="slider-row">
+        <span class="slider-label">Effect</span>
+        <input type="range" id="intensitySlider" min="0" max="100" value="70" oninput="updateIntensity(this)">
+        <span class="slider-val" id="intensityVal">70</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">Brightness</span>
+        <input type="range" id="brightSlider" min="50" max="160" value="100" oninput="updateBright(this)">
+        <span class="slider-val" id="brightVal">100</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">Contrast</span>
+        <input type="range" id="contrastSlider" min="50" max="200" value="110" oninput="updateContrast(this)">
+        <span class="slider-val" id="contrastVal">110</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">Saturation</span>
+        <input type="range" id="satSlider" min="0" max="300" value="120" oninput="updateSat(this)">
+        <span class="slider-val" id="satVal">120</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Particle FX</div>
+      <div class="slider-row">
+        <span class="slider-label">Rate</span>
+        <input type="range" id="particleRate" min="0" max="100" value="30" oninput="updateParticleRate(this)">
+        <span class="slider-val" id="particleRateVal">30</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">Size</span>
+        <input type="range" id="particleSize" min="2" max="20" value="6" oninput="updateParticleSize(this)">
+        <span class="slider-val" id="particleSizeVal">6</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+        <button class="btn" style="padding:5px 10px;font-size:10px" onclick="setParticleColor('rainbow')">🌈</button>
+        <button class="btn" style="padding:5px 10px;font-size:10px" onclick="setParticleColor('fire')">🔥</button>
+        <button class="btn" style="padding:5px 10px;font-size:10px" onclick="setParticleColor('ice')">❄️</button>
+        <button class="btn" style="padding:5px 10px;font-size:10px" onclick="setParticleColor('gold')">⭐</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Live Emotions</div>
+      <div class="emotion-meters">
+        <div class="emo-row">
+          <span class="emo-name">😄 Happy</span>
+          <div class="emo-bar-wrap"><div class="emo-bar" id="bar-happy" style="background:#6cff8a"></div></div>
+          <span class="emo-val" id="val-happy">0%</span>
+        </div>
+        <div class="emo-row">
+          <span class="emo-name">😮 Surprise</span>
+          <div class="emo-bar-wrap"><div class="emo-bar" id="bar-surprise" style="background:#ffd96c"></div></div>
+          <span class="emo-val" id="val-surprise">0%</span>
+        </div>
+        <div class="emo-row">
+          <span class="emo-name">😡 Anger</span>
+          <div class="emo-bar-wrap"><div class="emo-bar" id="bar-anger" style="background:#ff6c6c"></div></div>
+          <span class="emo-val" id="val-anger">0%</span>
+        </div>
+        <div class="emo-row">
+          <span class="emo-name">😢 Sad</span>
+          <div class="emo-bar-wrap"><div class="emo-bar" id="bar-sad" style="background:#6cb0ff"></div></div>
+          <span class="emo-val" id="val-sad">0%</span>
+        </div>
+        <div class="emo-row">
+          <span class="emo-name">😐 Neutral</span>
+          <div class="emo-bar-wrap"><div class="emo-bar" id="bar-neutral" style="background:#aaa"></div></div>
+          <span class="emo-val" id="val-neutral">0%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Camera</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button class="btn" onclick="startCamera()" style="width:100%">📷 Start Camera</button>
+        <button class="btn" onclick="switchCamera()" style="width:100%">🔄 Switch Camera</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Face Stats</div>
+      <div id="faceStats" style="font-size:10px;color:var(--muted);line-height:1.8;">
+        Awaiting face detection...
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+//  PRISM — LIVE FACE STUDIO ENGINE
+// ═══════════════════════════════════════
+
+const video = document.getElementById('videoEl');
+const canvas = document.getElementById('outputCanvas');
+const ctx = canvas.getContext('2d');
+const pCanvas = document.getElementById('particleCanvas');
+const pCtx = pCanvas.getContext('2d');
+
+let currentStyle = 'passthrough';
+let currentScene = 'none';
+let activeOverlays = new Set(['mesh']);
+let isMirrored = true;
+let showFaceMesh = true;
+let faceMeshData = null;
+let intensity = 0.7;
+let brightness = 100;
+let contrast = 110;
+let saturation = 120;
+let particleRateVal = 30;
+let particleSizeVal = 6;
+let particleColorMode = 'rainbow';
+let particles = [];
+let animationId = null;
+let isRecording = false;
+let mediaRecorder = null;
+let recordedChunks = [];
+let recStart = 0;
+let recTimerInterval = null;
+let cameras = [];
+let cameraIndex = 0;
+let stream = null;
+let faceMeshReady = false;
+let glitchOffset = 0;
+let frameCount = 0;
+let currentFaceLandmarks = null;
+let sceneAnimFrame = 0;
+
+// Emotion state
+let emotions = { happy: 0, surprise: 0, anger: 0, sad: 0, neutral: 100 };
+let smoothEmotions = { happy: 0, surprise: 0, anger: 0, sad: 0, neutral: 100 };
+
+// ── LOAD SEQUENCE ──
+const loadSteps = [
+  'Initializing face engine...',
+  'Loading MediaPipe FaceMesh...',
+  'Compiling shaders...',
+  'Starting particle system...',
+  'Ready!'
+];
+let loadStep = 0;
+function advanceLoad(pct, msg) {
+  document.getElementById('loadBar').style.width = pct + '%';
+  document.getElementById('loadText').textContent = msg;
+}
+advanceLoad(20, loadSteps[0]);
+
+// ── CANVAS RESIZE ──
+function resizeCanvases() {
+  const wrap = document.getElementById('canvasWrap');
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  pCanvas.width = w; pCanvas.height = h;
+  pCanvas.style.width = w + 'px'; pCanvas.style.height = h + 'px';
+}
+window.addEventListener('resize', resizeCanvases);
+resizeCanvases();
+
+// ── CAMERA ──
+async function startCamera() {
+  try {
+    const constraints = {
+      video: {
+        deviceId: cameras[cameraIndex] ? { exact: cameras[cameraIndex].deviceId } : undefined,
+        width: { ideal: 1280 }, height: { ideal: 720 }
+      }
+    };
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+
+    // Enumerate cameras
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    cameras = devs.filter(d => d.kind === 'videoinput');
+
+    setupFaceMesh();
+    document.getElementById('statusPill').classList.add('live');
+    document.getElementById('statusText').textContent = 'LIVE';
+    updateFaceStats('Face detection active');
+  } catch(e) {
+    alert('Camera error: ' + e.message + '\n\nPlease allow camera access.');
+  }
+}
+
+async function switchCamera() {
+  if (cameras.length < 2) { alert('No other cameras found.'); return; }
+  cameraIndex = (cameraIndex + 1) % cameras.length;
+  await startCamera();
+}
+
+// ── FACE MESH ──
+function setupFaceMesh() {
+  advanceLoad(60, 'Loading MediaPipe FaceMesh...');
+
+  // Check if MediaPipe is available
+  if (typeof FaceMesh === 'undefined') {
+    advanceLoad(100, 'MediaPipe unavailable — running in preview mode');
+    faceMeshReady = false;
+    startRenderLoop();
+    hideLoadScreen();
+    return;
+  }
+
+  const faceMesh = new FaceMesh({
+    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  faceMesh.onResults(onFaceResults);
+
+  const cam = new Camera(video, {
+    onFrame: async () => { await faceMesh.send({ image: video }); },
+    width: canvas.width, height: canvas.height
+  });
+
+  cam.start().then(() => {
+    faceMeshReady = true;
+    advanceLoad(100, 'Ready!');
+    startRenderLoop();
+    hideLoadScreen();
+  }).catch(e => {
+    console.warn('FaceMesh camera error:', e);
+    faceMeshReady = false;
+    startRenderLoop();
+    hideLoadScreen();
+  });
+}
+
+function hideLoadScreen() {
+  setTimeout(() => {
+    document.getElementById('loadScreen').classList.add('hidden');
+    setTimeout(() => document.getElementById('loadScreen').remove(), 700);
+  }, 400);
+}
+
+function onFaceResults(results) {
+  faceMeshData = results;
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    currentFaceLandmarks = results.multiFaceLandmarks[0];
+    analyzeEmotion(currentFaceLandmarks);
+  } else {
+    currentFaceLandmarks = null;
+  }
+}
+
+// ── EMOTION ENGINE ──
+// Uses face landmark geometry to estimate expressions
+function analyzeEmotion(landmarks) {
+  const W = canvas.width, H = canvas.height;
+
+  // Key landmark indices (MediaPipe Face Mesh)
+  const mouthTop = landmarks[13], mouthBot = landmarks[14];
+  const lipL = landmarks[61], lipR = landmarks[291];
+  const eyeLTop = landmarks[159], eyeLBot = landmarks[145];
+  const eyeRTop = landmarks[386], eyeRBot = landmarks[374];
+  const browLL = landmarks[70], browRL = landmarks[300];
+  const noseTip = landmarks[4];
+
+  // Mouth openness
+  const mouthOpen = Math.abs(mouthTop.y - mouthBot.y) * H;
+  const mouthWidth = Math.abs(lipL.x - lipR.x) * W;
+
+  // Smile: corner elevation relative to center
+  const mouthCenter = (mouthTop.y + mouthBot.y) / 2;
+  const cornerAvgY = (lipL.y + lipR.y) / 2;
+  const smileScore = Math.max(0, (mouthCenter - cornerAvgY) * H * 4);
+
+  // Eye openness
+  const eyeLOpen = Math.abs(eyeLTop.y - eyeLBot.y) * H;
+  const eyeROpen = Math.abs(eyeRTop.y - eyeRBot.y) * H;
+  const eyeAvg = (eyeLOpen + eyeROpen) / 2;
+
+  // Brow raise (eyebrow y vs eye y)
+  const browRaise = Math.max(0, (eyeLTop.y - browLL.y) * H * 2);
+
+  // Compute scores
+  const happyRaw = Math.min(100, smileScore * 3 + (mouthWidth / W * 200));
+  const surpriseRaw = Math.min(100, mouthOpen * 3 + browRaise * 2);
+  const angerRaw = Math.min(100, Math.max(0, 30 - browRaise) * 1.5);
+  const sadRaw = Math.min(100, Math.max(0, (cornerAvgY - mouthCenter) * H * 6));
+
+  emotions.happy = Math.round(happyRaw);
+  emotions.surprise = Math.round(surpriseRaw);
+  emotions.anger = Math.round(angerRaw);
+  emotions.sad = Math.round(sadRaw);
+  const total = emotions.happy + emotions.surprise + emotions.anger + emotions.sad;
+  emotions.neutral = Math.max(0, Math.round(100 - total / 2));
+
+  // Smooth
+  const s = 0.15;
+  Object.keys(smoothEmotions).forEach(k => {
+    smoothEmotions[k] = smoothEmotions[k] * (1 - s) + emotions[k] * s;
+  });
+
+  updateEmotionUI();
+
+  // Trigger particles on strong emotions
+  if (activeOverlays.has('particles')) {
+    if (smoothEmotions.happy > 60) spawnEmotionParticles('happy', 3);
+    if (smoothEmotions.surprise > 50) spawnEmotionParticles('surprise', 4);
+  }
+}
+
+function updateEmotionUI() {
+  const emos = { happy: 0, surprise: 0, anger: 0, sad: 0, neutral: 0 };
+  Object.keys(emos).forEach(k => emos[k] = smoothEmotions[k]);
+
+  Object.keys(emos).forEach(k => {
+    const bar = document.getElementById('bar-' + k);
+    const val = document.getElementById('val-' + k);
+    if (bar) bar.style.width = Math.min(100, emos[k]) + '%';
+    if (val) val.textContent = Math.round(emos[k]) + '%';
+  });
+
+  // Dominant emotion badge
+  const dominant = Object.keys(smoothEmotions).reduce((a, b) =>
+    smoothEmotions[a] > smoothEmotions[b] ? a : b
+  );
+  const emojiMap = { happy: '😄', surprise: '😮', anger: '😡', sad: '😢', neutral: '😐' };
+  const labelMap = { happy: 'HAPPY', surprise: 'SURPRISED', anger: 'ANGRY', sad: 'SAD', neutral: 'NEUTRAL' };
+  document.getElementById('emotionEmoji').textContent = emojiMap[dominant];
+  document.getElementById('emotionLabel').textContent = labelMap[dominant];
+}
+
+// ── RENDER LOOP ──
+function startRenderLoop() {
+  function render() {
+    animationId = requestAnimationFrame(render);
+    frameCount++;
+    sceneAnimFrame++;
+    drawFrame();
+  }
+  render();
+}
+
+function drawFrame() {
+  const W = canvas.width, H = canvas.height;
+  ctx.save();
+
+  // Mirror
+  if (isMirrored) {
+    ctx.translate(W, 0);
+    ctx.scale(-1, 1);
+  }
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  // Draw scene background (if no video or for overlay)
+  drawScene(W, H);
+
+  // Draw video
+  if (video.readyState >= 2) {
+    ctx.save();
+    applyStyleFilter(W, H);
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  // Draw overlays (non-mirrored space)
+  if (activeOverlays.has('mesh') && currentFaceLandmarks) drawFaceMesh();
+  if (activeOverlays.has('avatar') && currentFaceLandmarks) drawSVGAvatar();
+  if (activeOverlays.has('aura') && currentFaceLandmarks) drawAura();
+  if (activeOverlays.has('hud') && currentFaceLandmarks) drawHUD();
+
+  // Particles
+  updateParticles(W, H);
+
+  // FaceStats
+  if (currentFaceLandmarks && frameCount % 20 === 0) {
+    updateFaceStatsLive(currentFaceLandmarks);
+  }
+
+  // VHS lines
+  if (currentStyle === 'vhs') drawVHSEffect(W, H);
+  if (currentStyle === 'glitch' && frameCount % 8 === 0) drawGlitchEffect(W, H);
+}
+
+function applyStyleFilter(W, H) {
+  const filters = {
+    passthrough: `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`,
+    anime: `brightness(${brightness + 10}%) contrast(${contrast + 20}%) saturate(${saturation + 80}%)`,
+    neon: `brightness(${brightness + 30}%) contrast(${contrast + 40}%) saturate(300%) hue-rotate(${frameCount * 0.5}deg)`,
+    noir: `brightness(${brightness - 10}%) contrast(${contrast + 30}%) grayscale(${intensity * 100}%)`,
+    vhs: `brightness(${brightness}%) contrast(${contrast - 10}%) saturate(${saturation - 30}%) sepia(${intensity * 40}%)`,
+    pixel: `brightness(${brightness}%) contrast(${contrast + 20}%)`,
+    thermal: `brightness(${brightness}%) contrast(${contrast + 20}%) saturate(0%) hue-rotate(0deg)`,
+    glitch: `brightness(${brightness + 20}%) contrast(${contrast + 10}%) saturate(${saturation + 50}%)`
+  };
+
+  ctx.filter = filters[currentStyle] || filters.passthrough;
+  ctx.drawImage(video, 0, 0, W, H);
+  ctx.filter = 'none';
+
+  // Extra pixel effect
+  if (currentStyle === 'pixel') {
+    const pxSize = Math.round(8 * intensity);
+    if (pxSize > 1) {
+      const tmp = document.createElement('canvas');
+      tmp.width = Math.floor(W / pxSize);
+      tmp.height = Math.floor(H / pxSize);
+      const tc = tmp.getContext('2d');
+      tc.drawImage(canvas, 0, 0, tmp.width, tmp.height);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, W, H);
+      ctx.imageSmoothingEnabled = true;
+    }
+  }
+
+  // Thermal color map
+  if (currentStyle === 'thermal') {
+    const imgData = ctx.getImageData(0, 0, W, H);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const gray = 0.3 * d[i] + 0.59 * d[i+1] + 0.11 * d[i+2];
+      const n = gray / 255;
+      // thermal LUT: dark->blue->cyan->green->yellow->red->white
+      if (n < 0.25) { d[i]=0; d[i+1]=0; d[i+2]=Math.round(n*4*200); }
+      else if (n < 0.5) { d[i]=0; d[i+1]=Math.round((n-0.25)*4*255); d[i+2]=255-Math.round((n-0.25)*4*255); }
+      else if (n < 0.75) { d[i]=Math.round((n-0.5)*4*255); d[i+1]=255; d[i+2]=0; }
+      else { d[i]=255; d[i+1]=255-Math.round((n-0.75)*4*200); d[i+2]=0; }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  // Neon outline effect
+  if (currentStyle === 'anime') {
+    ctx.globalCompositeOperation = 'screen';
+    ctx.filter = `brightness(200%) blur(2px) saturate(300%)`;
+    ctx.globalAlpha = intensity * 0.3;
+    ctx.drawImage(video, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+    ctx.filter = 'none';
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
+// ── SCENE BACKGROUNDS ──
+function drawScene(W, H) {
+  const scenes = {
+    space: () => {
+      const grad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H));
+      grad.addColorStop(0, '#100030');
+      grad.addColorStop(1, '#000000');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+      // Stars
+      ctx.fillStyle = 'white';
+      for (let i = 0; i < 80; i++) {
+        const sx = (Math.sin(i * 2.3 + sceneAnimFrame * 0.001) * 0.5 + 0.5) * W;
+        const sy = (Math.cos(i * 1.7) * 0.5 + 0.5) * H;
+        const size = Math.abs(Math.sin(i + sceneAnimFrame * 0.02)) * 2;
+        ctx.globalAlpha = 0.6 + Math.sin(sceneAnimFrame * 0.05 + i) * 0.3;
+        ctx.beginPath(); ctx.arc(sx, sy, size, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    },
+    city: () => {
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, '#000818');
+      grad.addColorStop(0.6, '#001440');
+      grad.addColorStop(1, '#002060');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+      // Buildings
+      ctx.fillStyle = '#001030';
+      for (let i = 0; i < 16; i++) {
+        const bw = W/12, bh = H * 0.25 + (i % 5) * H * 0.12;
+        const bx = (i/16) * W + (i % 3) * 10;
+        ctx.fillRect(bx, H - bh, bw * 0.8, bh);
+        // Windows
+        ctx.fillStyle = 'rgba(255,220,80,0.6)';
+        for (let wy = H - bh + 10; wy < H - 10; wy += 18) {
+          for (let wx = bx + 5; wx < bx + bw * 0.8 - 5; wx += 12) {
+            if (Math.sin(wx * wy * 0.01 + sceneAnimFrame * 0.003) > 0.2)
+              ctx.fillRect(wx, wy, 6, 8);
+          }
+        }
+        ctx.fillStyle = '#001030';
+      }
+    },
+    forest: () => {
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, '#001510');
+      grad.addColorStop(1, '#003020');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+      // Trees
+      for (let i = 0; i < 14; i++) {
+        const tx = (i/14) * W;
+        const th = H * 0.4 + (i%4) * H * 0.1;
+        ctx.fillStyle = `hsl(${130 + i*3},${40 + i%20}%,${10 + i%8}%)`;
+        ctx.beginPath();
+        ctx.moveTo(tx, H);
+        ctx.lineTo(tx + W/18, H - th);
+        ctx.lineTo(tx + W/9, H);
+        ctx.fill();
+      }
+      // Fireflies
+      for (let i = 0; i < 15; i++) {
+        const fx = (Math.sin(i * 3.1 + sceneAnimFrame * 0.02) * 0.5 + 0.5) * W;
+        const fy = (Math.cos(i * 2.7 + sceneAnimFrame * 0.015) * 0.5 + 0.5) * H * 0.7;
+        ctx.globalAlpha = (Math.sin(sceneAnimFrame * 0.1 + i) * 0.5 + 0.5) * 0.8;
+        ctx.fillStyle = '#aaff88';
+        ctx.beginPath(); ctx.arc(fx, fy + H * 0.1, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    },
+    sunset: () => {
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, '#1a000a');
+      grad.addColorStop(0.5, '#600020');
+      grad.addColorStop(1, '#c04000');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+      // Sun
+      const sunY = H * 0.55 + Math.sin(sceneAnimFrame * 0.005) * 5;
+      const sunGrad = ctx.createRadialGradient(W/2, sunY, 0, W/2, sunY, W * 0.15);
+      sunGrad.addColorStop(0, '#ffffff'); sunGrad.addColorStop(0.3, '#ffcc44');
+      sunGrad.addColorStop(1, 'transparent');
+      ctx.fillStyle = sunGrad; ctx.fillRect(0, 0, W, H);
+    },
+    matrix: () => {
+      ctx.fillStyle = 'rgba(0,10,0,0.3)'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#00ff44'; ctx.font = `${Math.round(H/30)}px monospace`;
+      for (let i = 0; i < 30; i++) {
+        const x = (i / 30) * W;
+        const y = ((sceneAnimFrame * 2 + i * 37) % (H + 40)) - 20;
+        ctx.fillText(String.fromCharCode(33 + Math.floor(Math.sin(i + sceneAnimFrame * 0.1) * 47 + 47)), x, y);
+      }
+    }
+  };
+
+  if (currentScene !== 'none' && scenes[currentScene]) {
+    scenes[currentScene]();
+  }
+}
+
+// ── VHS EFFECT ──
+function drawVHSEffect(W, H) {
+  // Scan lines
+  ctx.fillStyle = 'rgba(0,0,0,0.03)';
+  for (let y = 0; y < H; y += 3) {
+    ctx.fillRect(0, y, W, 1);
+  }
+  // Chromatic aberration
+  const offset = Math.sin(frameCount * 0.1) * 3;
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = 0.15;
+  const imgData = ctx.getImageData(0, 0, W, H);
+  const shifted = new ImageData(W, H);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    const x = (i / 4) % W;
+    const y = Math.floor(i / 4 / W);
+    const nx = Math.min(W - 1, Math.max(0, x + offset));
+    const ni = (y * W + nx) * 4;
+    shifted.data[i] = imgData.data[ni];
+    shifted.data[i + 3] = 255;
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  // Rolling noise line
+  const noiseY = (frameCount * 3) % H;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(0, noiseY, W, 2);
+}
+
+// ── GLITCH EFFECT ──
+function drawGlitchEffect(W, H) {
+  for (let i = 0; i < 4; i++) {
+    const gy = Math.random() * H;
+    const gh = 2 + Math.random() * 20;
+    const shift = (Math.random() - 0.5) * 40;
+    ctx.save();
+    const slice = ctx.getImageData(0, gy, W, gh);
+    ctx.putImageData(slice, shift, gy);
+    ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'screen';
+  ctx.fillStyle = `rgba(${Math.random()*255},0,${Math.random()*255},0.05)`;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// ── FACE MESH DRAW ──
+const FACE_CONNECTIONS = [
+  // Jawline
+  [10,338],[338,297],[297,332],[332,284],[284,251],[251,389],[389,356],[356,454],[454,323],[323,361],[361,288],[288,397],[397,365],[365,379],[379,378],[378,400],[400,377],[377,152],[152,148],[148,176],[176,149],[149,150],[150,136],[136,172],[172,58],[58,132],[132,93],[93,234],[234,127],[127,162],[162,21],[21,54],[54,103],[103,67],[67,109],[109,10],
+  // Left eye
+  [33,7],[7,163],[163,144],[144,145],[145,153],[153,154],[154,155],[155,133],[133,33],
+  // Right eye
+  [362,398],[398,384],[384,385],[385,386],[386,387],[387,388],[388,466],[466,362],
+  // Nose
+  [4,1],[1,5],[5,4],[4,51],[51,131],[131,134],[134,102],[102,49],[49,129],[129,51],
+  // Mouth outer
+  [61,185],[185,40],[40,39],[39,37],[37,0],[0,267],[267,269],[269,270],[270,409],[409,291],[291,375],[375,321],[321,405],[405,314],[314,17],[17,84],[84,181],[181,91],[91,146],[146,61],
+];
+
+function drawFaceMesh() {
+  if (!currentFaceLandmarks) return;
+  const W = canvas.width, H = canvas.height;
+  const lm = currentFaceLandmarks;
+
+  ctx.save();
+  if (isMirrored) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+
+  // Connections
+  ctx.strokeStyle = 'rgba(108,255,212,0.4)';
+  ctx.lineWidth = 0.8;
+  FACE_CONNECTIONS.forEach(([a, b]) => {
+    if (!lm[a] || !lm[b]) return;
+    ctx.beginPath();
+    ctx.moveTo(lm[a].x * W, lm[a].y * H);
+    ctx.lineTo(lm[b].x * W, lm[b].y * H);
+    ctx.stroke();
+  });
+
+  // Key landmarks
+  ctx.fillStyle = 'rgba(176,108,255,0.8)';
+  const keyPoints = [33, 133, 362, 466, 61, 291, 4, 152, 10];
+  keyPoints.forEach(i => {
+    if (!lm[i]) return;
+    ctx.beginPath();
+    ctx.arc(lm[i].x * W, lm[i].y * H, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+// ── SVG AVATAR OVERLAY ──
+function drawSVGAvatar() {
+  if (!currentFaceLandmarks) return;
+  const W = canvas.width, H = canvas.height;
+  const lm = currentFaceLandmarks;
+  const mx = isMirrored ? (x) => W - x * W : (x) => x * W;
+  const my = (y) => y * H;
+
+  ctx.save();
+
+  // Nose tip as center reference
+  const cx = mx(lm[4].x);
+  const cy = my(lm[4].y);
+  const eyeL = { x: mx(lm[33].x), y: my(lm[33].y) };
+  const eyeR = { x: mx(lm[263].x), y: my(lm[263].y) };
+  const eyeDist = Math.abs(eyeR.x - eyeL.x);
+  const scale = eyeDist / 120;
+
+  // Draw anime-style avatar elements
+  // Big eyes
+  const drawAnimeEye = (ex, ey, dir) => {
+    const r = eyeDist * 0.28;
+    // White
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, r, r * 0.75, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'white';
+    ctx.fill();
+    // Iris
+    ctx.beginPath();
+    ctx.ellipse(ex + dir * 2, ey, r * 0.65, r * 0.72, 0, 0, Math.PI * 2);
+    const grad = ctx.createRadialGradient(ex + dir * 2, ey - r * 0.1, 0, ex + dir * 2, ey, r * 0.65);
+    grad.addColorStop(0, '#b06cff');
+    grad.addColorStop(0.5, '#6040c0');
+    grad.addColorStop(1, '#000');
+    ctx.fillStyle = grad; ctx.fill();
+    // Pupil
+    ctx.beginPath();
+    ctx.ellipse(ex + dir * 2, ey + 2, r * 0.28, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#000'; ctx.fill();
+    // Highlight
+    ctx.beginPath();
+    ctx.arc(ex + dir * 3 - r * 0.2, ey - r * 0.2, r * 0.15, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fill();
+    // Outline
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, r, r * 0.75, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
+  };
+
+  // Check eye openness for blinking
+  const eyeLOpen = Math.abs(lm[159].y - lm[145].y) * H;
+  const eyeROpen = Math.abs(lm[386].y - lm[374].y) * H;
+
+  if (eyeLOpen > 4) drawAnimeEye(eyeL.x, eyeL.y, -1);
+  else {
+    ctx.beginPath(); ctx.moveTo(eyeL.x - eyeDist*0.28, eyeL.y);
+    ctx.lineTo(eyeL.x + eyeDist*0.28, eyeL.y);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  if (eyeROpen > 4) drawAnimeEye(eyeR.x, eyeR.y, 1);
+  else {
+    ctx.beginPath(); ctx.moveTo(eyeR.x - eyeDist*0.28, eyeR.y);
+    ctx.lineTo(eyeR.x + eyeDist*0.28, eyeR.y);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  // Mouth
+  const mL = { x: mx(lm[61].x), y: my(lm[61].y) };
+  const mR = { x: mx(lm[291].x), y: my(lm[291].y) };
+  const mT = { x: mx(lm[13].x), y: my(lm[13].y) };
+  const mB = { x: mx(lm[14].x), y: my(lm[14].y) };
+  const mOpen = mB.y - mT.y;
+  ctx.beginPath();
+  if (mOpen > 8) {
+    ctx.ellipse((mL.x + mR.x)/2, (mT.y + mB.y)/2, (mR.x - mL.x)/2, mOpen/2, 0, 0, Math.PI*2);
+    ctx.fillStyle = '#cc3366'; ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
+  } else {
+    ctx.moveTo(mL.x, mL.y);
+    ctx.quadraticCurveTo((mL.x + mR.x)/2, mB.y + 5, mR.x, mR.y);
+    ctx.strokeStyle = '#cc3366'; ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── AURA ──
+function drawAura() {
+  if (!currentFaceLandmarks) return;
+  const W = canvas.width, H = canvas.height;
+  const lm = currentFaceLandmarks;
+  const cx = isMirrored ? W - lm[4].x * W : lm[4].x * W;
+  const cy = lm[4].y * H;
+  const r = Math.abs(lm[33].x - lm[263].x) * W * 1.2;
+
+  const dominant = Object.keys(smoothEmotions).reduce((a, b) =>
+    smoothEmotions[a] > smoothEmotions[b] ? a : b
+  );
+  const auraColors = {
+    happy: ['rgba(255,220,100,0)', 'rgba(255,220,100,0.12)'],
+    surprise: ['rgba(100,200,255,0)', 'rgba(100,200,255,0.12)'],
+    anger: ['rgba(255,80,80,0)', 'rgba(255,80,80,0.12)'],
+    sad: ['rgba(80,120,255,0)', 'rgba(80,120,255,0.12)'],
+    neutral: ['rgba(176,108,255,0)', 'rgba(176,108,255,0.08)']
+  };
+
+  const t = Date.now() / 1000;
+  const pulse = Math.sin(t * 2) * 0.1 + 1;
+
+  ctx.save();
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2.2 * pulse);
+  const [inner, outer] = auraColors[dominant] || auraColors.neutral;
+  grad.addColorStop(0, inner);
+  grad.addColorStop(1, outer);
+  ctx.fillStyle = grad;
+  ctx.globalCompositeOperation = 'screen';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 2.2 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+// ── HUD LINES ──
+function drawHUD() {
+  if (!currentFaceLandmarks) return;
+  const W = canvas.width, H = canvas.height;
+  const lm = currentFaceLandmarks;
+  const cx = isMirrored ? W - lm[4].x * W : lm[4].x * W;
+  const cy = lm[4].y * H;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(108,255,212,0.5)';
+  ctx.lineWidth = 0.8;
+  ctx.setLineDash([4, 8]);
+  // Cross hair lines
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Corner brackets
+  const bx = cx - 60, by = cy - 80, bw = 120, bh = 160;
+  const bl = 20;
+  ctx.strokeStyle = 'rgba(108,255,212,0.8)';
+  ctx.lineWidth = 1.5;
+  // TL
+  ctx.beginPath(); ctx.moveTo(bx+bl,by); ctx.lineTo(bx,by); ctx.lineTo(bx,by+bl); ctx.stroke();
+  // TR
+  ctx.beginPath(); ctx.moveTo(bx+bw-bl,by); ctx.lineTo(bx+bw,by); ctx.lineTo(bx+bw,by+bl); ctx.stroke();
+  // BL
+  ctx.beginPath(); ctx.moveTo(bx+bl,by+bh); ctx.lineTo(bx,by+bh); ctx.lineTo(bx,by+bh-bl); ctx.stroke();
+  // BR
+  ctx.beginPath(); ctx.moveTo(bx+bw-bl,by+bh); ctx.lineTo(bx+bw,by+bh); ctx.lineTo(bx+bw,by+bh-bl); ctx.stroke();
+
+  // Labels
+  ctx.fillStyle = 'rgba(108,255,212,0.7)';
+  ctx.font = '9px monospace';
+  ctx.fillText('FACE LOCK', bx, by - 6);
+  ctx.fillText(`X:${Math.round(cx)} Y:${Math.round(cy)}`, bx + bw - 70, by - 6);
+
+  ctx.restore();
+}
+
+// ── PARTICLES ──
+function spawnEmotionParticles(type, count) {
+  if (!currentFaceLandmarks) return;
+  const W = canvas.width, H = canvas.height;
+  const lm = currentFaceLandmarks;
+  const cx = isMirrored ? W - lm[4].x * W : lm[4].x * W;
+  const cy = lm[4].y * H;
+
+  const colorMap = {
+    happy: ['#ffdd44', '#ffaa44', '#ff88aa'],
+    surprise: ['#44ddff', '#44ffaa', '#ffffff'],
+    anger: ['#ff4444', '#ff8844', '#ff0000'],
+    ice: ['#88ddff', '#aaeeff', '#ffffff'],
+    fire: ['#ff6600', '#ff4400', '#ffcc00'],
+    gold: ['#ffd700', '#ffcc44', '#ffffaa'],
+    rainbow: null
+  };
+
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 3;
+    let color;
+    if (colorMap[particleColorMode] === null || type === 'rainbow') {
+      color = `hsl(${Math.random() * 360},100%,70%)`;
+    } else {
+      const colors = colorMap[particleColorMode] || colorMap[type] || colorMap.happy;
+      color = colors[Math.floor(Math.random() * colors.length)];
+    }
+
+    particles.push({
+      x: cx + (Math.random() - 0.5) * 60,
+      y: cy + (Math.random() - 0.5) * 60,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1,
+      life: 1,
+      decay: 0.01 + Math.random() * 0.02,
+      size: particleSizeVal * (0.5 + Math.random()),
+      color
+    });
+  }
+}
+
+function updateParticles(W, H) {
+  // Auto spawn if enabled
+  if (activeOverlays.has('particles') && currentFaceLandmarks && Math.random() * 100 < particleRateVal * 0.3) {
+    spawnEmotionParticles('neutral', 1);
+  }
+
+  pCtx.clearRect(0, 0, W, H);
+
+  particles = particles.filter(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy -= 0.05; // gravity up
+    p.life -= p.decay;
+    if (p.life <= 0) return false;
+
+    pCtx.save();
+    pCtx.globalAlpha = p.life;
+    pCtx.fillStyle = p.color;
+    pCtx.shadowColor = p.color;
+    pCtx.shadowBlur = 8;
+    pCtx.beginPath();
+    pCtx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    pCtx.fill();
+    pCtx.restore();
+    return true;
+  });
+}
+
+// ── FX BURST ──
+function triggerBurst() {
+  if (!currentFaceLandmarks) {
+    alert('No face detected! Point camera at your face first.');
+    return;
+  }
+  for (let i = 0; i < 60; i++) {
+    setTimeout(() => spawnEmotionParticles('rainbow', 3), i * 15);
+  }
+}
+
+// ── FACE STATS ──
+function updateFaceStats(msg) {
+  document.getElementById('faceStats').innerHTML = msg;
+}
+
+function updateFaceStatsLive(lm) {
+  const W = canvas.width, H = canvas.height;
+  const eyeDist = Math.round(Math.abs(lm[33].x - lm[263].x) * W);
+  const pitch = Math.round((lm[4].y - 0.5) * 200);
+  const yaw = Math.round((lm[4].x - 0.5) * -200);
+  const mouthOpen = Math.round(Math.abs(lm[13].y - lm[14].y) * H);
+
+  updateFaceStats(`
+    <span style="color:var(--accent3)">Eye Dist:</span> ${eyeDist}px<br>
+    <span style="color:var(--accent3)">Pitch:</span> ${pitch > 0 ? '+' : ''}${pitch}°<br>
+    <span style="color:var(--accent3)">Yaw:</span> ${yaw > 0 ? '+' : ''}${yaw}°<br>
+    <span style="color:var(--accent3)">Mouth Open:</span> ${mouthOpen}px<br>
+    <span style="color:var(--accent3)">Landmarks:</span> 468
+  `);
+}
+
+// ── CONTROLS ──
+function setStyle(style) {
+  currentStyle = style;
+  document.querySelectorAll('.style-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.style === style);
+  });
+}
+
+function setScene(scene) {
+  currentScene = scene;
+  document.querySelectorAll('.scene-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.scene === scene);
+  });
+  if (scene === 'none') {
+    canvas.style.background = '';
+  }
+}
+
+function toggleOverlay(name) {
+  if (activeOverlays.has(name)) activeOverlays.delete(name);
+  else activeOverlays.add(name);
+  document.querySelectorAll('[data-ov]').forEach(c => {
+    c.classList.toggle('active', activeOverlays.has(c.dataset.ov));
+  });
+}
+
+function toggleMirror() {
+  isMirrored = !isMirrored;
+  document.getElementById('mirrorBtn').classList.toggle('active', isMirrored);
+}
+
+function toggleFaceMesh() {
+  toggleOverlay('mesh');
+  document.getElementById('meshBtn').classList.toggle('active', activeOverlays.has('mesh'));
+}
+
+function cycleStyle() {
+  const styles = ['passthrough','anime','pixel','neon','noir','vhs','thermal','glitch'];
+  const idx = (styles.indexOf(currentStyle) + 1) % styles.length;
+  setStyle(styles[idx]);
+}
+
+function updateIntensity(el) {
+  intensity = el.value / 100;
+  document.getElementById('intensityVal').textContent = el.value;
+}
+function updateBright(el) {
+  brightness = parseInt(el.value);
+  document.getElementById('brightVal').textContent = el.value;
+}
+function updateContrast(el) {
+  contrast = parseInt(el.value);
+  document.getElementById('contrastVal').textContent = el.value;
+}
+function updateSat(el) {
+  saturation = parseInt(el.value);
+  document.getElementById('satVal').textContent = el.value;
+}
+function updateParticleRate(el) {
+  particleRateVal = parseInt(el.value);
+  document.getElementById('particleRateVal').textContent = el.value;
+}
+function updateParticleSize(el) {
+  particleSizeVal = parseInt(el.value);
+  document.getElementById('particleSizeVal').textContent = el.value;
+}
+function setParticleColor(mode) {
+  particleColorMode = mode;
+  triggerBurst();
+}
+
+// ── RECORDING ──
+function toggleRecord() {
+  if (!isRecording) startRecording();
+  else stopRecording();
+}
+
+function startRecording() {
+  try {
+    const outStream = canvas.captureStream(30);
+    if (stream) {
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) outStream.addTrack(audioTrack);
+    }
+    recordedChunks = [];
+    const options = { mimeType: 'video/webm;codecs=vp9' };
+    try { mediaRecorder = new MediaRecorder(outStream, options); }
+    catch(e) { mediaRecorder = new MediaRecorder(outStream); }
+
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start(100);
+
+    isRecording = true;
+    recStart = Date.now();
+    document.getElementById('recBtn').classList.add('active');
+    document.getElementById('recTimer').classList.add('show');
+    document.getElementById('statusPill').classList.add('live');
+
+    recTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recStart) / 1000);
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('recTime').textContent = `${m}:${s}`;
+    }, 1000);
+  } catch(e) {
+    alert('Recording error: ' + e.message);
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder) mediaRecorder.stop();
+  isRecording = false;
+  clearInterval(recTimerInterval);
+  document.getElementById('recBtn').classList.remove('active');
+  document.getElementById('recTimer').classList.remove('show');
+}
+
+function saveRecording() {
+  const blob = new Blob(recordedChunks, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `prism-${Date.now()}.webm`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function captureSnapshot() {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = `prism-snap-${Date.now()}.png`;
+  a.click();
+}
+
+// ── INIT ──
+advanceLoad(40, 'Starting particle system...');
+setTimeout(() => {
+  advanceLoad(80, 'Awaiting camera...');
+  // Auto-start if possible
+  startCamera();
+}, 800);
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.key === 'm' || e.key === 'M') toggleMirror();
+  if (e.key === 'r' || e.key === 'R') toggleRecord();
+  if (e.key === 's' || e.key === 'S') captureSnapshot();
+  if (e.key === ' ') { e.preventDefault(); triggerBurst(); }
+  if (e.key >= '1' && e.key <= '8') {
+    const styles = ['passthrough','anime','pixel','neon','noir','vhs','thermal','glitch'];
+    setStyle(styles[parseInt(e.key) - 1]);
+  }
+});
+</script>
+</body>
+</html>
