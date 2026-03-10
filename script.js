@@ -35,7 +35,8 @@ const S = {
   segmentationMask:null,
   rec:false, stream:null, mr:null, chunks:[], recStart:0, recInt:null,
   cams:[], camIdx:0, ovVisible:false, chromaMode:'none',
-  rafRunning:false, fmInstance:null, ssInstance:null, pose:{pitch:0,yaw:0,roll:0}
+  rafRunning:false, fmInstance:null, ssInstance:null, pose:{pitch:0,yaw:0,roll:0},
+  vrm: null, vrmScene: null, vrmCamera: null, vrmRenderer: null, clock: null
 };
 
 
@@ -57,6 +58,13 @@ function setFaceStats(h){const e=document.getElementById('faceStats');if(e)e.inn
 function syncParticleCanvas(){
   const w=document.getElementById('canvasWrap');
   pCanvas.width=w.clientWidth; pCanvas.height=w.clientHeight;
+  const vCanvas = document.getElementById('vrmCanvas');
+  vCanvas.width = w.clientWidth; vCanvas.height = w.clientHeight;
+  if (S.vrmRenderer && S.vrmCamera) {
+    S.vrmRenderer.setSize(w.clientWidth, w.clientHeight);
+    S.vrmCamera.aspect = w.clientWidth / w.clientHeight;
+    S.vrmCamera.updateProjectionMatrix();
+  }
 }
 window.addEventListener('resize',syncParticleCanvas);
 syncParticleCanvas();
@@ -79,6 +87,9 @@ async function startCamera(){
       audio:false
     };
 
+    // Modify to request audio for streaming/recording use-case
+    constraints.audio = true;
+
     // Add ideal resolution only if not on a strict mobile browser that might fail
     if(!isMobile) {
         if(constraints.video.deviceId) {
@@ -92,12 +103,14 @@ async function startCamera(){
     try {
         S.stream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch(err) {
-        console.warn("Primary constraints failed, trying generic constraints", err);
-        // Fallback for tricky mobile browsers
+        console.warn("Primary constraints failed, trying generic constraints without audio", err);
+        // Fallback for tricky mobile browsers or if no mic is available
         S.stream = await navigator.mediaDevices.getUserMedia({video: true, audio: false});
     }
 
+    // Set video src but keep it muted so we don't hear our own echo locally
     video.srcObject = S.stream;
+    video.muted = true;
     video.play().catch(e => console.warn("Auto-play prevented", e));
 
     // Wait for video data — works on all browsers
@@ -273,14 +286,32 @@ function updateEmoUI(){
 // ── RENDER LOOP ──
 function startRAF(){
   S.rafRunning=true;
+  if (!S.clock) S.clock = new THREE.Clock();
   (function frame(){
     requestAnimationFrame(frame);
     S.frameCount++;S.sceneF++;
     drawFrame();
+
+    // VRM Animation
+    if (S.style === 'vtuber' && S.vrm) {
+        const delta = S.clock.getDelta();
+
+        // Map Tracking data to VRM
+        updateVRMTracking(delta);
+
+        S.vrm.update(delta);
+        S.vrmRenderer.render(S.vrmScene, S.vrmCamera);
+    }
+
     if(S.ovVisible){
       const mw=miniC.offsetWidth||280,mh=miniC.offsetHeight||170;
       miniC.width=mw;miniC.height=mh;
+
+      // Merge output canvas and VRM canvas for overlay
       miniCtx.drawImage(canvas,0,0,mw,mh);
+      if (S.style === 'vtuber') {
+         miniCtx.drawImage(document.getElementById('vrmCanvas'), 0, 0, mw, mh);
+      }
     }
   })();
 }
@@ -289,13 +320,24 @@ function drawFrame(){
   const W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
   if(S.scene!=='none')drawScene(ctx,W,H);
-  if(video.readyState>=2)applyStyle(W,H);
-  if(S.lm){
-    if(S.overlays.has('mesh'))drawMesh(W,H);
-    if(S.overlays.has('avatar'))drawAvatar(W,H);
-    if(S.overlays.has('aura'))drawAIAura(W,H);
-    if(S.overlays.has('hud'))drawHUD(W,H);
+
+  if (S.style !== 'vtuber') {
+    if(video.readyState>=2)applyStyle(W,H);
+    if(S.lm){
+      if(S.overlays.has('mesh'))drawMesh(W,H);
+      if(S.overlays.has('avatar'))drawAvatar(W,H);
+      if(S.overlays.has('aura'))drawAIAura(W,H);
+      if(S.overlays.has('hud'))drawHUD(W,H);
+    }
+  } else {
+    // VTuber Mode - Apply video styling if needed as background, or just use scene
+    // If no scene, hide video, otherwise keep scene
+    if (S.scene === 'none') {
+       // Clear to transparent or dark so we only see the avatar
+       ctx.clearRect(0, 0, W, H);
+    }
   }
+
   drawParticles(W,H);
   if(S.lm&&S.frameCount%24===0)updateFaceStatsLive();
 }
@@ -721,20 +763,68 @@ function updateFaceStatsLive(){
   S.pose = { pitch, yaw, roll };
 }
 // ── CONTROLS ──
-function setStyle(el){S.style=el.dataset.style;document.querySelectorAll('.sc').forEach(c=>c.classList.toggle('active',c===el));}
+function setStyle(el){
+    S.style=el.dataset.style;
+    document.querySelectorAll('.sc').forEach(c=>c.classList.toggle('active',c===el));
+
+    // VTuber specific logic
+    const vCanvas = document.getElementById('vrmCanvas');
+    const vControls = document.getElementById('vrmControls');
+    const vControlsMob = document.getElementById('vrmControlsMob');
+
+    if (S.style === 'vtuber') {
+        vCanvas.style.display = 'block';
+        if (vControls) vControls.style.display = 'block';
+        if (vControlsMob) vControlsMob.style.display = 'block';
+        if (!S.vrmScene) initVRM(); // Initialize Three.js scene on first use
+    } else {
+        vCanvas.style.display = 'none';
+        if (vControls) vControls.style.display = 'none';
+        if (vControlsMob) vControlsMob.style.display = 'none';
+    }
+}
 function setScene(el){S.scene=el.dataset.scene;document.querySelectorAll('.bg-card').forEach(c=>c.classList.toggle('active',c===el));}
 function toggleOvChip(el){const k=el.dataset.ov;S.overlays.has(k)?S.overlays.delete(k):S.overlays.add(k);el.classList.toggle('active',S.overlays.has(k));if(k==='mesh')document.getElementById('meshBtn').classList.toggle('active',S.overlays.has('mesh'));}
 function toggleMirror(){S.mirrored=!S.mirrored;document.getElementById('mirrorBtn').classList.toggle('active',S.mirrored);}
 function toggleMeshBtn(){const el=document.querySelector('[data-ov="mesh"]');if(el)toggleOvChip(el);}
-function cycleStyle(){const styles=['passthrough','anime','pixel','neon','noir','vhs','thermal','glitch'];const el=document.querySelector(`[data-style="${styles[(styles.indexOf(S.style)+1)%styles.length]}"]`);if(el)setStyle(el);}
+function cycleStyle(){const styles=['passthrough','vtuber','anime','pixel','neon','noir','vhs','thermal','glitch'];const el=document.querySelector(`[data-style="${styles[(styles.indexOf(S.style)+1)%styles.length]}"]`);if(el)setStyle(el);}
 function sliderSet(key,val,el){S[key]=val;const v=document.getElementById('sv-'+key);if(v)v.textContent=el.value;}
 
 // ── RECORDING ──
 function toggleRecord(){S.rec?stopRec():startRec();}
 function startRec(){
   try{
-    const out=canvas.captureStream(30);
-    if(S.stream){const a=S.stream.getAudioTracks()[0];if(a)out.addTrack(a);}
+    let out;
+    // Capture from the combined output canvas in VTuber mode, else main canvas
+    if (S.style === 'vtuber') {
+        const combinedCanvas = document.createElement('canvas');
+        combinedCanvas.width = canvas.width;
+        combinedCanvas.height = canvas.height;
+        const combinedCtx = combinedCanvas.getContext('2d');
+
+        out = combinedCanvas.captureStream(30);
+
+        // Setup a loop to copy both canvases to the combined one
+        const streamLoop = () => {
+             if (S.rec) {
+                 combinedCtx.clearRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+                 combinedCtx.drawImage(canvas, 0, 0);
+                 const vCanvas = document.getElementById('vrmCanvas');
+                 if (vCanvas) combinedCtx.drawImage(vCanvas, 0, 0, combinedCanvas.width, combinedCanvas.height);
+                 requestAnimationFrame(streamLoop);
+             }
+        };
+        requestAnimationFrame(streamLoop);
+    } else {
+        out=canvas.captureStream(30);
+    }
+
+    // Add audio track if available
+    if(S.stream){
+        const a=S.stream.getAudioTracks()[0];
+        if(a) out.addTrack(a);
+    }
+
     S.chunks=[];
     const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
     S.mr=new MediaRecorder(out,{mimeType:mime});
@@ -794,7 +884,7 @@ function switchTab(n){
 
 // ── MOBILE ──
 const MOB={
-  styles(){return `<div class="plabel">Face Style</div><div class="style-grid">${['passthrough','anime','pixel','neon','noir','vhs','thermal','glitch'].map(s=>`<div class="sc${s==='passthrough'?' active':''}" data-style="${s}" onclick="setStyle(this);closeMobDrawer()">${({passthrough:'🎭 Normal',anime:'✨ Anime',pixel:'🕹️ Pixel',neon:'🌈 Neon',noir:'🎬 Noir',vhs:'📼 VHS',thermal:'🌡️ Thermal',glitch:'⚡ Glitch'})[s]}</div>`).join('')}</div>`;},
+  styles(){return `<div class="plabel">Face Style</div><div class="style-grid">${['passthrough','vtuber','anime','pixel','neon','noir','vhs','thermal','glitch'].map(s=>`<div class="sc${s==='passthrough'?' active':''}" data-style="${s}" onclick="setStyle(this);closeMobDrawer()">${({passthrough:'🎭 Normal',vtuber:'🦊 VTuber',anime:'✨ Anime',pixel:'🕹️ Pixel',neon:'🌈 Neon',noir:'🎬 Noir',vhs:'📼 VHS',thermal:'🌡️ Thermal',glitch:'⚡ Glitch'})[s]}</div>`).join('')}</div><div id="vrmControlsMob" style="display:${S.style==='vtuber'?'block':'none'}; margin-top:10px;"><label for="vrmUploadMob" class="btn sm" style="display:block; text-align:center;">📂 Load .vrm Avatar</label><input type="file" id="vrmUploadMob" accept=".vrm" style="display:none;" onchange="loadCustomVRM(this);closeMobDrawer()"></div>`;},
   scene(){return `<div class="plabel">Background</div><div class="scene-grid">${[{s:'none',e:'🚫',bg:'#111'},{s:'space',e:'🌌',bg:'linear-gradient(135deg,#0a0020,#200060)'},{s:'city',e:'🌃',bg:'linear-gradient(135deg,#001030,#003060)'},{s:'forest',e:'🌿',bg:'linear-gradient(135deg,#002010,#004020)'},{s:'sunset',e:'🌅',bg:'linear-gradient(135deg,#300010,#800040)'},{s:'matrix',e:'💻',bg:'#001000'}].map(x=>`<div class="bg-card" data-scene="${x.s}" onclick="setScene(this);closeMobDrawer()" style="background:${x.bg}">${x.e}</div>`).join('')}</div>`;},
   fx(){return `<div class="plabel">Particle FX</div><div class="sl-row"><span class="sl-lbl">Rate</span><input type="range" min="0" max="100" value="${S.pRate}" oninput="sliderSet('pRate',+this.value,this)"><span class="sl-val">${S.pRate}</span></div><div class="sl-row"><span class="sl-lbl">Size</span><input type="range" min="2" max="20" value="${S.pSize}" oninput="sliderSet('pSize',+this.value,this)"><span class="sl-val">${S.pSize}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" onclick="S.pColor='rainbow'">🌈 Rain</button><button class="btn sm" onclick="S.pColor='fire'">🔥 Fire</button><button class="btn sm" onclick="S.pColor='ice'">❄️ Ice</button><button class="btn sm" onclick="S.pColor='gold'">⭐ Gold</button></div><button class="btn acc3" style="width:100%;margin-top:10px" onclick="triggerBurst()">✨ FX Burst</button>`;},
   emo(){return `<div class="plabel">Live Emotions</div><div class="emo-meters"><div class="er"><span class="en">😄 Happy</span><div class="eb-wrap"><div class="eb" style="background:#6cff8a;width:${S.smooth.happy}%"></div></div><span class="ev">${S.smooth.happy|0}%</span></div><div class="er"><span class="en">😮 Surprise</span><div class="eb-wrap"><div class="eb" style="background:#ffd96c;width:${S.smooth.surprise}%"></div></div><span class="ev">${S.smooth.surprise|0}%</span></div><div class="er"><span class="en">😡 Anger</span><div class="eb-wrap"><div class="eb" style="background:#ff6c6c;width:${S.smooth.anger}%"></div></div><span class="ev">${S.smooth.anger|0}%</span></div></div>`;},
@@ -816,7 +906,7 @@ md.addEventListener('touchstart',e=>tsy=e.touches[0].clientY,{passive:true});
 md.addEventListener('touchend',e=>{if(e.changedTouches[0].clientY-tsy>60)closeMobDrawer();},{passive:true});
 
 // ── LOAD SCREEN ──
-function hideLoad(){setTimeout(()=>{const l=document.getElementById('loadScreen');l.classList.add('gone');setTimeout(()=>{try{l.remove();}catch(e){}},600);},500);}
+function hideLoad(){setTimeout(()=>{const l=document.getElementById('loadScreen');if(l)l.classList.add('gone');},500);}
 
 // ── KEYBOARD ──
 document.addEventListener('keydown',e=>{
@@ -827,9 +917,219 @@ document.addEventListener('keydown',e=>{
   else if(k==='s'||k==='S')captureSnap();
   else if(k===' '){e.preventDefault();triggerBurst();}
   else if(k==='g'||k==='G')toggleOv_float();
-  else if(k>='1'&&k<='8'){const el=document.querySelector(`[data-style="${['passthrough','anime','pixel','neon','noir','vhs','thermal','glitch'][+k-1]}"]`);if(el)setStyle(el);}
+  else if(k>='1'&&k<='9'){const el=document.querySelector(`[data-style="${['passthrough','vtuber','anime','pixel','neon','noir','vhs','thermal','glitch'][+k-1]}"]`);if(el)setStyle(el);}
 });
 
+
+// ── VRM ENGINE ──
+function initVRM() {
+    if (S.vrmScene) return; // Already initialized
+
+    const vCanvas = document.getElementById('vrmCanvas');
+    S.vrmRenderer = new THREE.WebGLRenderer({ canvas: vCanvas, alpha: true, antialias: true });
+    S.vrmRenderer.setSize(vCanvas.clientWidth, vCanvas.clientHeight);
+    S.vrmRenderer.setPixelRatio(window.devicePixelRatio);
+    S.vrmRenderer.outputEncoding = THREE.sRGBEncoding;
+
+    S.vrmScene = new THREE.Scene();
+    S.vrmCamera = new THREE.PerspectiveCamera(30.0, vCanvas.clientWidth / vCanvas.clientHeight, 0.1, 20.0);
+    S.vrmCamera.position.set(0.0, 1.45, 1.3);
+
+    // Light
+    const light = new THREE.DirectionalLight(0xffffff, 1.0);
+    light.position.set(1.0, 1.0, 1.0).normalize();
+    S.vrmScene.add(light);
+
+    // Ambient light for better shading
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    S.vrmScene.add(ambientLight);
+
+    // Load a default VRM avatar (using a reliable open source/free-to-use URL for testing)
+    const defaultVRMUrl = 'https://cdn.jsdelivr.net/gh/pixiv/three-vrm@dev/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm';
+    loadVRMFile(defaultVRMUrl);
+}
+
+function loadVRMFile(url) {
+    load(85, 'Loading 3D Avatar...');
+    const loader = new THREE.GLTFLoader();
+
+    loader.register((parser) => {
+        return new THREE_VRM.VRMLoaderPlugin(parser);
+    });
+
+    loader.load(
+        url,
+        (gltf) => {
+            const vrm = gltf.userData.vrm;
+
+            // Remove previous VRM if exists
+            if (S.vrm) {
+                S.vrmScene.remove(S.vrm.scene);
+                S.vrm.dispose();
+            }
+
+            S.vrm = vrm;
+            S.vrmScene.add(vrm.scene);
+
+            // Adjust pose
+            vrm.humanoid.getNormalizedBoneNode('leftUpperArm').rotation.z = 1.3;
+            vrm.humanoid.getNormalizedBoneNode('rightUpperArm').rotation.z = -1.3;
+
+            // Adjust camera to focus on face/head
+            const head = vrm.humanoid.getNormalizedBoneNode('head');
+            if (head) {
+                S.vrm.scene.updateMatrixWorld(true);
+                const headPos = new THREE.Vector3();
+                head.getWorldPosition(headPos);
+                S.vrmCamera.position.set(0, headPos.y, 1.5); // Move camera to face level
+            }
+
+            hideLoad();
+            toast('VRM Avatar loaded!', 'ok', 3000);
+        },
+        (progress) => {
+             const p = 85 + (progress.loaded / progress.total) * 15;
+             document.getElementById('lbar').style.width = p + '%';
+        },
+        (error) => {
+            console.error(error);
+            toast('Failed to load VRM model.', 'err', 4000);
+            hideLoad();
+        }
+    );
+}
+
+function loadCustomVRM(input) {
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const url = URL.createObjectURL(file);
+    document.getElementById('loadScreen').classList.remove('gone');
+    loadVRMFile(url);
+}
+
+// Map tracking to VRM
+function updateVRMTracking(delta) {
+    if (!S.vrm || !S.lm) return;
+
+    const g = i => S.lm[i] || {x: .5, y: .5, z: 0};
+
+    // -- Head Rotation (Pitch, Yaw, Roll) --
+    // Calculate directly from current landmarks for real-time tracking
+    const nose = g(1);
+    const leftEye = g(33);
+    const rightEye = g(263);
+
+    const pitchRaw = Math.round((nose.y - .5) * 180);
+    const yawRaw = Math.round((nose.x - .5) * -180);
+    const dx = rightEye.x - leftEye.x;
+    const dy = rightEye.y - leftEye.y;
+    const rollRaw = Math.round(Math.atan2(dy, dx) * (180 / Math.PI));
+
+    const yaw = (yawRaw || 0) * (Math.PI / 180);
+    const pitch = (pitchRaw || 0) * (Math.PI / 180);
+    const roll = (rollRaw || 0) * (Math.PI / 180);
+
+    const head = S.vrm.humanoid.getNormalizedBoneNode('head');
+    const neck = S.vrm.humanoid.getNormalizedBoneNode('neck');
+
+    if (head && neck) {
+        // Apply mirror logic
+        const mirrorYaw = S.mirrored ? -yaw : yaw;
+        const mirrorRoll = S.mirrored ? -roll : roll;
+        const mirrorPitch = -pitch; // Three.js YXZ Euler usually needs inverted pitch
+
+        // Smooth out the rotation
+        const targetRotation = new THREE.Euler(mirrorPitch, mirrorYaw, mirrorRoll, 'YXZ');
+        const targetQuat = new THREE.Quaternion().setFromEuler(targetRotation);
+
+        // Split rotation between neck and head for more natural look
+        const slerpFactor = 15 * delta;
+        head.quaternion.slerp(targetQuat, slerpFactor * 0.6);
+        neck.quaternion.slerp(targetQuat, slerpFactor * 0.4);
+
+        // Bonus: Move chest slightly based on pitch
+        const chest = S.vrm.humanoid.getNormalizedBoneNode('chest');
+        const spine = S.vrm.humanoid.getNormalizedBoneNode('spine');
+        if (chest && spine) {
+            const chestQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(mirrorPitch * 0.3, mirrorYaw * 0.3, mirrorRoll * 0.2, 'YXZ'));
+            chest.quaternion.slerp(chestQuat, slerpFactor * 0.3);
+            spine.quaternion.slerp(chestQuat, slerpFactor * 0.2);
+        }
+    }
+
+    // -- Face Blends (Expressions) --
+    const exp = S.vrm.expressionManager;
+    if (exp) {
+        // Blinking
+        // Top and bottom eye lids distance
+        const lEyeTop = g(159), lEyeBot = g(145);
+        const rEyeTop = g(386), rEyeBot = g(374);
+        const eyeW = Math.abs(g(33).x - g(133).x); // Normalize by eye width
+
+        // Ensure eyeW is not 0
+        const lOpenRatio = eyeW > 0 ? Math.abs(lEyeBot.y - lEyeTop.y) / eyeW : 0;
+        const rOpenRatio = eyeW > 0 ? Math.abs(rEyeBot.y - rEyeTop.y) / eyeW : 0;
+
+        // Thresholds based on typical MediaPipe distances
+        const blinkThreshold = 0.18; // Adjusted ratio threshold
+        // Smooth blinking
+        let targetLBlink = lOpenRatio < blinkThreshold ? 1 : 0;
+        let targetRBlink = rOpenRatio < blinkThreshold ? 1 : 0;
+
+        // Mirror logic for blinking
+        const actualLBlink = S.mirrored ? targetRBlink : targetLBlink;
+        const actualRBlink = S.mirrored ? targetLBlink : targetRBlink;
+
+        // Current values
+        let currentL = exp.getValue('blinkLeft') || 0;
+        let currentR = exp.getValue('blinkRight') || 0;
+
+        exp.setValue('blinkLeft', currentL + (actualLBlink - currentL) * delta * 25);
+        exp.setValue('blinkRight', currentR + (actualRBlink - currentR) * delta * 25);
+
+        // Mouth Open (A/I/U/E/O)
+        const mT = g(13), mB = g(14);
+        const faceH = Math.abs(g(10).y - g(152).y); // Normalize by face height
+        const mouthOpenRatio = faceH > 0 ? Math.abs(mB.y - mT.y) / faceH : 0;
+
+        // Thresholds
+        const mouthBase = 0.015;
+        let targetMouth = Math.min(1.0, Math.max(0, (mouthOpenRatio - mouthBase) * 12));
+
+        let currentMouth = exp.getValue('aa') || 0;
+
+        // Map to 'A' blendshape for talking (smoothed)
+        exp.setValue('aa', currentMouth + (targetMouth - currentMouth) * delta * 20);
+
+        // Determine dominant emotion
+        const dom = Object.keys(S.smooth).reduce((a,b)=>S.smooth[a]>S.smooth[b]?a:b);
+        const intensity = S.smooth[dom] / 100;
+
+        // Also add a little bit of 'I' when smiling (happy)
+        if (dom === 'happy') {
+             let currentI = exp.getValue('ih') || 0;
+             exp.setValue('ih', currentI + (targetMouth * 0.5 - currentI) * delta * 15);
+        } else {
+             exp.setValue('ih', 0);
+        }
+
+        // Emotions from S.smooth
+        // Reset all first
+        exp.setValue('happy', 0);
+        exp.setValue('angry', 0);
+        exp.setValue('sad', 0);
+        exp.setValue('relaxed', 0);
+        exp.setValue('surprised', 0);
+
+        // Apply emotion
+
+        if (dom === 'happy') exp.setValue('happy', intensity);
+        if (dom === 'anger') exp.setValue('angry', intensity);
+        if (dom === 'sad') exp.setValue('sad', intensity);
+        if (dom === 'surprise') exp.setValue('surprised', intensity);
+        if (dom === 'neutral') exp.setValue('relaxed', intensity * 0.5); // Slight relaxed state
+    }
+}
 
 // ── BOOT SEQUENCE ──
 load(15,'Loading tracking libraries…');
