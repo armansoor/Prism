@@ -769,18 +769,12 @@ function setStyle(el){
 
     // VTuber specific logic
     const vCanvas = document.getElementById('vrmCanvas');
-    const vControls = document.getElementById('vrmControls');
-    const vControlsMob = document.getElementById('vrmControlsMob');
 
     if (S.style === 'vtuber') {
         vCanvas.style.display = 'block';
-        if (vControls) vControls.style.display = 'block';
-        if (vControlsMob) vControlsMob.style.display = 'block';
         if (!S.vrmScene) initVRM(); // Initialize Three.js scene on first use
     } else {
         vCanvas.style.display = 'none';
-        if (vControls) vControls.style.display = 'none';
-        if (vControlsMob) vControlsMob.style.display = 'none';
     }
 }
 function setScene(el){S.scene=el.dataset.scene;document.querySelectorAll('.bg-card').forEach(c=>c.classList.toggle('active',c===el));}
@@ -884,7 +878,7 @@ function switchTab(n){
 
 // ── MOBILE ──
 const MOB={
-  styles(){return `<div class="plabel">Face Style</div><div class="style-grid">${['passthrough','vtuber','anime','pixel','neon','noir','vhs','thermal','glitch'].map(s=>`<div class="sc${s==='passthrough'?' active':''}" data-style="${s}" onclick="setStyle(this);closeMobDrawer()">${({passthrough:'🎭 Normal',vtuber:'🦊 VTuber',anime:'✨ Anime',pixel:'🕹️ Pixel',neon:'🌈 Neon',noir:'🎬 Noir',vhs:'📼 VHS',thermal:'🌡️ Thermal',glitch:'⚡ Glitch'})[s]}</div>`).join('')}</div><div id="vrmControlsMob" style="display:${S.style==='vtuber'?'block':'none'}; margin-top:10px;"><label for="vrmUploadMob" class="btn sm" style="display:block; text-align:center;">📂 Load .vrm Avatar</label><input type="file" id="vrmUploadMob" accept=".vrm" style="display:none;" onchange="loadCustomVRM(this);closeMobDrawer()"></div>`;},
+  styles(){return `<div class="plabel">Face Style</div><div class="style-grid">${['passthrough','vtuber','anime','pixel','neon','noir','vhs','thermal','glitch'].map(s=>`<div class="sc${s==='passthrough'?' active':''}" data-style="${s}" onclick="setStyle(this);closeMobDrawer()">${({passthrough:'🎭 Normal',vtuber:'🦊 VTuber',anime:'✨ Anime',pixel:'🕹️ Pixel',neon:'🌈 Neon',noir:'🎬 Noir',vhs:'📼 VHS',thermal:'🌡️ Thermal',glitch:'⚡ Glitch'})[s]}</div>`).join('')}</div><div id="vrmControlsMob" style="margin-top:10px;"><label for="vrmUploadMob" class="btn sm" style="display:block; text-align:center;">📂 Load .vrm Avatar</label><input type="file" id="vrmUploadMob" accept=".vrm" style="display:none;" onchange="loadCustomVRM(this);closeMobDrawer()"></div>`;},
   scene(){return `<div class="plabel">Background</div><div class="scene-grid">${[{s:'none',e:'🚫',bg:'#111'},{s:'space',e:'🌌',bg:'linear-gradient(135deg,#0a0020,#200060)'},{s:'city',e:'🌃',bg:'linear-gradient(135deg,#001030,#003060)'},{s:'forest',e:'🌿',bg:'linear-gradient(135deg,#002010,#004020)'},{s:'sunset',e:'🌅',bg:'linear-gradient(135deg,#300010,#800040)'},{s:'matrix',e:'💻',bg:'#001000'}].map(x=>`<div class="bg-card" data-scene="${x.s}" onclick="setScene(this);closeMobDrawer()" style="background:${x.bg}">${x.e}</div>`).join('')}</div>`;},
   fx(){return `<div class="plabel">Particle FX</div><div class="sl-row"><span class="sl-lbl">Rate</span><input type="range" min="0" max="100" value="${S.pRate}" oninput="sliderSet('pRate',+this.value,this)"><span class="sl-val">${S.pRate}</span></div><div class="sl-row"><span class="sl-lbl">Size</span><input type="range" min="2" max="20" value="${S.pSize}" oninput="sliderSet('pSize',+this.value,this)"><span class="sl-val">${S.pSize}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" onclick="S.pColor='rainbow'">🌈 Rain</button><button class="btn sm" onclick="S.pColor='fire'">🔥 Fire</button><button class="btn sm" onclick="S.pColor='ice'">❄️ Ice</button><button class="btn sm" onclick="S.pColor='gold'">⭐ Gold</button></div><button class="btn acc3" style="width:100%;margin-top:10px" onclick="triggerBurst()">✨ FX Burst</button>`;},
   emo(){return `<div class="plabel">Live Emotions</div><div class="emo-meters"><div class="er"><span class="en">😄 Happy</span><div class="eb-wrap"><div class="eb" style="background:#6cff8a;width:${S.smooth.happy}%"></div></div><span class="ev">${S.smooth.happy|0}%</span></div><div class="er"><span class="en">😮 Surprise</span><div class="eb-wrap"><div class="eb" style="background:#ffd96c;width:${S.smooth.surprise}%"></div></div><span class="ev">${S.smooth.surprise|0}%</span></div><div class="er"><span class="en">😡 Anger</span><div class="eb-wrap"><div class="eb" style="background:#ff6c6c;width:${S.smooth.anger}%"></div></div><span class="ev">${S.smooth.anger|0}%</span></div></div>`;},
@@ -1003,6 +997,13 @@ function loadCustomVRM(input) {
     if (!input.files || input.files.length === 0) return;
     const file = input.files[0];
     const url = URL.createObjectURL(file);
+
+    // Automatically switch to VTuber style if they are loading a VRM
+    if (S.style !== 'vtuber') {
+        const vtuberBtn = document.querySelector('[data-style="vtuber"]');
+        if (vtuberBtn) setStyle(vtuberBtn);
+    }
+
     document.getElementById('loadScreen').classList.remove('gone');
     loadVRMFile(url);
 }
