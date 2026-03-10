@@ -118,6 +118,7 @@
     <div class="plabel">Face Style</div>
     <div class="style-grid">
       <div class="sc active" data-style="passthrough" onclick="setStyle(this)"><span class="sico">🎭</span>Normal</div>
+      <div class="sc" data-style="vtuber" onclick="setStyle(this)"><span class="sico">🦊</span>VTuber</div>
       <div class="sc" data-style="anime" onclick="setStyle(this)"><span class="sico">✨</span>Anime</div>
       <div class="sc" data-style="pixel" onclick="setStyle(this)"><span class="sico">🕹️</span>Pixel</div>
       <div class="sc" data-style="neon" onclick="setStyle(this)"><span class="sico">🌈</span>Neon</div>
@@ -125,6 +126,11 @@
       <div class="sc" data-style="vhs" onclick="setStyle(this)"><span class="sico">📼</span>VHS</div>
       <div class="sc" data-style="thermal" onclick="setStyle(this)"><span class="sico">🌡️</span>Thermal</div>
       <div class="sc" data-style="glitch" onclick="setStyle(this)"><span class="sico">⚡</span>Glitch</div>
+    </div>
+
+    <div id="vrmControls" style="display:none; margin-top:10px;">
+      <label for="vrmUpload" class="btn sm" style="display:block; text-align:center;">📂 Load .vrm Avatar</label>
+      <input type="file" id="vrmUpload" accept=".vrm" style="display:none;" onchange="loadCustomVRM(this)">
     </div>
   </div>
   <div class="psect">
@@ -167,7 +173,8 @@
     <video id="videoEl" playsinline autoplay muted></video>
     <canvas id="particleCanvas"></canvas>
     <canvas id="outputCanvas" width="640" height="480"></canvas>
-    <div class="emo-badge"><span id="emoEmoji" style="font-size:16px">😐</span><span class="emo-lbl" id="emoLbl">NEUTRAL</span></div>
+    <canvas id="vrmCanvas" width="640" height="480" style="position:absolute;z-index:10;pointer-events:none;display:none;"></canvas>
+    <div class="emo-badge" style="z-index:25"><span id="emoEmoji" style="font-size:16px">😐</span><span class="emo-lbl" id="emoLbl">NEUTRAL</span></div>
   </div>
   <div class="stage-bar">
     <button class="btn" id="mirrorBtn" onclick="toggleMirror()">🪞 Mirror</button>
@@ -244,6 +251,11 @@
   <div class="mob-drawer-handle" onclick="closeMobDrawer()"></div>
   <div class="mob-drawer-inner" id="mobDrawerInner"></div>
 </div>
+
+<!-- Three.js and VRM -->
+<script src="https://unpkg.com/three@0.146.0/build/three.js"></script>
+<script src="https://unpkg.com/three@0.146.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.js"></script>
 
 <script src="script.js"></script>
 </body>
